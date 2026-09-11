@@ -1,0 +1,65 @@
+(in-package #:ip-protocol)
+
+(defclass ip-network ()
+  ((address :initarg :address :reader network-address)
+   (prefix :initarg :prefix :reader network-prefix)))
+
+(defun ip-network-p (object)
+  (typep object 'ip-network))
+
+(defclass ipv4-network (ip-network) ())
+(defclass ipv6-network (ip-network) ())
+
+(defun %bits (net)
+  (if (typep net 'ipv4-network) 32 128))
+
+(defun %network-base (net)
+  (let* ((bits (%bits net))
+         (len (network-prefix net))
+         (v (ip-integer (network-address net)))
+         (mask (if (zerop len) 0 (ash (1- (ash 1 len)) (- bits len)))))
+    (logand v mask)))
+
+(defun parse-network (string)
+  (let* ((slash (position #\/ string))
+         (addr-s (if slash (subseq string 0 slash) string))
+         (addr (parse-ip addr-s))
+         (bits (if (ipv4-address-p addr) 32 128))
+         (prefix (if slash
+                     (let ((p (ignore-errors (parse-integer (subseq string (1+ slash))))))
+                       (unless (and p (<= 0 p bits))
+                         (error 'ip-parse-error :message (format nil "bad prefix: ~S" string)))
+                       p)
+                     bits)))
+    (make-instance (if (ipv4-address-p addr) 'ipv4-network 'ipv6-network)
+                   :address addr
+                   :prefix prefix)))
+
+(defun network-string (net)
+  (format nil "~A/~D" (ip-string (network-address net)) (network-prefix net)))
+
+(defun network-size (net)
+  (ash 1 (- (%bits net) (network-prefix net))))
+
+(defun ip-contains-p (net addr)
+  (unless (and (ip-network-p net) (ip-address-p addr))
+    (return-from ip-contains-p nil))
+  (unless (= (ip-version addr)
+             (if (typep net 'ipv4-network) 4 6))
+    (return-from ip-contains-p nil))
+  (let* ((bits (%bits net))
+         (len (network-prefix net)))
+    (%in-cidr-p (ip-integer addr) (%network-base net) len bits)))
+
+(defun ip-overlaps-p (a b)
+  (unless (and (ip-network-p a) (ip-network-p b))
+    (return-from ip-overlaps-p nil))
+  (unless (eq (class-of a) (class-of b))
+    (return-from ip-overlaps-p nil))
+  (let* ((bits (%bits a))
+         (a0 (%network-base a))
+         (b0 (%network-base b))
+         (a1 (+ a0 (1- (network-size a))))
+         (b1 (+ b0 (1- (network-size b)))))
+    (declare (ignore bits))
+    (not (or (< a1 b0) (< b1 a0)))))
